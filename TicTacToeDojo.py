@@ -22,6 +22,13 @@ def convert_tuple_board_to_numeric(state_tuple):
     MY_DICT = {'X':0, 'O':1, ' ':2}
     return [MY_DICT[i] for i in list(state_tuple)]
 
+def print_board(board):
+    print(" "+board[0]+" | "+board[1]+" | "+board[2]+" ")
+    print("-----------")
+    print(" "+board[3]+" | "+board[4]+" | "+board[5]+" ")
+    print("-----------")
+    print(" "+board[6]+" | "+board[7]+" | "+board[8]+" ")
+
 def is_winner(board, player):
     # Check rows
     for i in range(3):
@@ -55,7 +62,6 @@ def select_random(actions):
     try:
         return random.choice(actions)
     except IndexError:
-        print(IndexError)
         raise IndexError;
 
 # Define the reward function
@@ -108,6 +114,9 @@ class QFunction:
     def getModel(self):
         return self.model
 
+    def setModel(self, model):
+        self.model = model
+
 # Define the agent class
 class Agent:
     def __init__(self, state_shape, num_actions, hidden_units=64, learning_rate=0.001, gamma=0.99, epsilon=0.1):
@@ -124,6 +133,17 @@ class Agent:
             action = np.argmax(q_values)
         return action
 
+    def model_act(self, state):
+        q_values = self.q_function(state)
+        actions = get_all_possible_actions(state)
+        while True:
+            action = np.argmax(q_values)
+            if action not in actions:
+                q_values[action] = -1_000_000
+            else:
+                break
+        return action
+
     def learn(self, state, action, reward, next_state):
         next_q_values = self.q_function(next_state)
         target = reward + self.gamma * np.max(next_q_values)
@@ -132,14 +152,18 @@ class Agent:
     def getModel(self):
         return self.q_function.getModel()
 
+    def setModel(self, model):
+        self.q_function.setModel(model)
+
 def perform_tic_tac_toe_training():
     # Train the agent
-    num_episodes = 10000
-    num_episodes = 1
-    agent = Agent(state_shape=(9,), num_actions=9, hidden_units=64, learning_rate=0.001, gamma=0.99, epsilon=0.1)
+    # num_episodes = 10000
+    num_episodes = 100
+    # agent = Agent(state_shape=(9,), num_actions=9, hidden_units=64, learning_rate=0.001, gamma=0.99, epsilon=0.1)
+    agent = Agent(state_shape=(9,), num_actions=9, hidden_units=64, learning_rate=0.01, gamma=0.99, epsilon=0.1)
 
     for episode in range(num_episodes):
-        board = [' ' for x in range(9)]
+        board = [' ' for _ in range(9)]
         player = 'X'
         turn = 1
         while not is_game_over(board):
@@ -151,10 +175,29 @@ def perform_tic_tac_toe_training():
             reward_value = reward(next_state)
             agent.learn(state, action, reward_value, next_state)
             player = get_other_player(player)
-        if episode % 1000 == 0:
-            print("Episode", episode)
+
+        print("Episode", episode)
 
     # Save the agent object to disk
     with open('./model/tic_tac_toe_agent.pkl', 'wb') as f:
         pickle.dump(agent.getModel(), f)
+
+
+def play_simulation():
+    agent = Agent(state_shape=(9,), num_actions=9, hidden_units=64, learning_rate=0.01, gamma=0.99, epsilon=0.1)
+    with open('./model/tic_tac_toe_agent.pkl', 'rb') as f:
+        model = pickle.load(f)
+        agent.setModel(model)
+
+    # Play the game
+    board = [' ' for _ in range(9)]
+    player = 'X'
+    turn = 1
+    while not is_game_over(board):
+        state = (tuple(board), player, turn)
+        action = agent.model_act(state)
+        board[action] = player
+        turn += 1
+        player = get_other_player(player)
+        print_board(board)
 
