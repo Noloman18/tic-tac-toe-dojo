@@ -2,6 +2,8 @@ import random
 import numpy as np
 import tensorflow as tf
 import pickle
+import os
+import time
 
 # Define the state space
 all_possible_boards = [' ' * 9]
@@ -48,8 +50,8 @@ def is_winner(board, player):
     # If no winner is found, return False
     return False
 
-def is_game_over(board):
-    return ' ' not in board or is_winner(board, 'X') or is_winner(board, 'O')
+def is_game_over(board, turn):
+    return turn > 9 or ' ' not in board or is_winner(board, 'X') or is_winner(board, 'O')
 
 def get_other_player(player):
     return 'O' if player == 'X' else 'X'
@@ -65,14 +67,17 @@ def select_random(actions):
         raise IndexError;
 
 # Define the reward function
-def reward(state):
-    board, player, turn = state
+def reward(previous_state, next_state):
+    board, player, turn = next_state
     if is_winner(board, player):
-        return 1.0
+        return 2.0
     elif is_winner(board, get_other_player(player)):
-        return -1.0
-    else:
-        return 0.0
+        return -2.0
+
+    if len(get_all_possible_actions(previous_state)) == len(get_all_possible_actions(next_state)):
+        return -0.2
+
+    return 0.0
 
 # Define the Q-function using a neural network
 class QFunction:
@@ -123,25 +128,24 @@ class Agent:
         self.q_function = QFunction(state_shape, num_actions, hidden_units, learning_rate)
         self.gamma = gamma
         self.epsilon = epsilon
+        self.actions_performed = {'X': [], 'O': []}
 
     def act(self, state):
         if random.random() < self.epsilon:
-            all_actions = get_all_possible_actions(state)
-            action = select_random(all_actions)
+            action = select_random(get_all_possible_actions(state))
         else:
             q_values = self.q_function(state)
             action = np.argmax(q_values)
-        return action
+            if self.epsilon == 0:
+                actions = get_all_possible_actions(state)
+                while True:
+                    action = np.argmax(q_values)
+                    if action not in actions:
+                        q_values[action] = -1_000_000
+                    else:
+                        break
 
-    def model_act(self, state):
-        q_values = self.q_function(state)
-        actions = get_all_possible_actions(state)
-        while True:
-            action = np.argmax(q_values)
-            if action not in actions:
-                q_values[action] = -1_000_000
-            else:
-                break
+        self.actions_performed.get(state[1]).append(action)
         return action
 
     def learn(self, state, action, reward, next_state):
@@ -155,36 +159,59 @@ class Agent:
     def setModel(self, model):
         self.q_function.setModel(model)
 
+    def new_game(self):
+        self.actions_performed = {'X':[], 'O':[]}
+
+def reload_memento(agent):
+    training_context = {'elapsed_time_in_seconds': 0, 'num_iterations' : 0}
+    if os.path.exists('./model/tic_tac_toe_agent.pkl'):
+        with open('./model/tic_tac_toe_agent.pkl', 'rb') as f:
+            model = pickle.load(f)
+            agent.setModel(model)
+    if os.path.exists('./training_context.pkl'):
+        with open('./training_context.pkl', 'rb') as f:
+            training_context = pickle.load(f)
+    return training_context
+
+def create_memento(agent, training_context):
+    with open('./model/tic_tac_toe_agent.pkl', 'wb') as f:
+        pickle.dump(agent.getModel(), f)
+    with open('./training_context.pkl', 'wb') as f:
+        pickle.dump(training_context, f)
+
 def perform_tic_tac_toe_training():
     # Train the agent
-    # num_episodes = 10000
-    num_episodes = 100
-    # agent = Agent(state_shape=(9,), num_actions=9, hidden_units=64, learning_rate=0.001, gamma=0.99, epsilon=0.1)
-    agent = Agent(state_shape=(9,), num_actions=9, hidden_units=64, learning_rate=0.01, gamma=0.99, epsilon=0.1)
+    training_instance_iterations = 10_000_000
+    agent = Agent(state_shape=(9,), num_actions=9, hidden_units=64, learning_rate=0.001, gamma=0.99, epsilon=0.1)
 
-    for episode in range(num_episodes):
+    training_context = reload_memento(agent)
+
+    original_elapsed_time = training_context['elapsed_time_in_seconds']
+    st = time.time()
+    for episode in range(training_context['num_iterations'],training_instance_iterations):
         board = [' ' for _ in range(9)]
         player = 'X'
         turn = 1
-        while not is_game_over(board):
+        agent.new_game()
+        training_context['num_iterations'] += 1
+        while not is_game_over(board, turn):
             state = (tuple(board), player, turn)
             action = agent.act(state)
             board[action] = player
             turn += 1
             next_state = (tuple(board), get_other_player(player), turn)
-            reward_value = reward(next_state)
+            reward_value = reward(state, next_state)
             agent.learn(state, action, reward_value, next_state)
             player = get_other_player(player)
-
-        print("Episode", episode)
-
-    # Save the agent object to disk
-    with open('./model/tic_tac_toe_agent.pkl', 'wb') as f:
-        pickle.dump(agent.getModel(), f)
-
+            elapsed_time = time.time() - st
+            training_context['elapsed_time_in_seconds'] = original_elapsed_time + elapsed_time
+        if episode%10 == 0:
+            print("Episode", episode, "Game:", agent.actions_performed, "Training context", training_context)
+        if episode > 0 and episode %100 ==0:
+            create_memento(agent, training_context)
 
 def play_simulation():
-    agent = Agent(state_shape=(9,), num_actions=9, hidden_units=64, learning_rate=0.01, gamma=0.99, epsilon=0.1)
+    agent = Agent(state_shape=(9,), num_actions=9, hidden_units=64, learning_rate=0.01, gamma=0.99, epsilon=0.0)
     with open('./model/tic_tac_toe_agent.pkl', 'rb') as f:
         model = pickle.load(f)
         agent.setModel(model)
@@ -195,7 +222,7 @@ def play_simulation():
     turn = 1
     while not is_game_over(board):
         state = (tuple(board), player, turn)
-        action = agent.model_act(state)
+        action = agent.act(state)
         board[action] = player
         turn += 1
         player = get_other_player(player)
