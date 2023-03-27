@@ -1,3 +1,4 @@
+import math
 import os
 import pickle
 import random
@@ -69,19 +70,22 @@ def select_random(actions):
 # Define the reward function
 def reward(state, next_state):
     if len(get_all_possible_actions(state[0])) == len(get_all_possible_actions(next_state[0])):
-        return -2.0
+        return -6.0
 
-    if is_winner(next_state[0], state[1]):
-        return 2.0
+    if is_game_over(next_state[0]):
+        if is_winner(next_state[0], state[1]):
+            return 2.0
 
-    if is_winner(next_state[0], next_state[1]):
-        return -2.0
+        if is_winner(next_state[0], next_state[1]):
+            return -2.0
+
+        return 1
 
     return 0.0
 
 # Define the Q-function using a neural network
 class QFunction:
-    def __init__(self, state_shape, num_actions, hidden_units=64, learning_rate=0.001):
+    def __init__(self, state_shape, num_actions, hidden_units=128, learning_rate=0.001):
         self.state_shape = state_shape
         self.num_actions = num_actions
         self.hidden_units = hidden_units
@@ -93,7 +97,7 @@ class QFunction:
     def _build_model(self):
         inputs = tf.keras.layers.Input(shape=self.state_shape)
         x = tf.keras.layers.Dense(self.hidden_units, activation='relu')(inputs)
-        # x = tf.keras.layers.Dense(self.hidden_units, activation='relu')(x)
+        x = tf.keras.layers.Dense(self.hidden_units, activation='relu')(x)
         outputs = tf.keras.layers.Dense(self.num_actions)(x)
         model = tf.keras.models.Model(inputs=inputs, outputs=outputs)
         return model
@@ -130,34 +134,28 @@ class Agent:
         self.epsilon = epsilon
         self.actions_performed = {'X': [], 'O': []}
 
-    def act(self, state, skipRandom = False):
+    def act(self, state):
         notRandomSelection = True
         actions = get_all_possible_actions(state[0])
-        if not skipRandom and random.random() < self.epsilon:
+        if random.random() < self.epsilon:
             action = select_random(actions)
             notRandomSelection = False
-            while True:
-                if action not in actions:
-                    action = select_random(actions)
-                else:
-                    break
         else:
             q_values = self.q_function(state)
-            action = np.argmax(q_values)
-            if skipRandom and self.epsilon == 0:
-                while True:
-                    action = np.argmax(q_values)
-                    if action not in actions:
-                        q_values[action] = -1_000_000
-                    else:
-                        break
+            maximum = -1_000_000
+            for possible_action in actions:
+                if q_values[possible_action] > maximum:
+                    maximum = q_values[possible_action]
+                    action = possible_action
 
         self.actions_performed.get(state[1]).append(f"{'NR' if notRandomSelection else 'R'} {action}")
-        return action, np.max(self.q_function(state))
+        return action
 
     def learn(self, state, action, reward, next_state):
-        next_q_values = self.q_function(next_state)
-        target = reward + self.gamma * np.max(next_q_values)
+        target = reward
+        if not is_game_over(next_state[0]):
+            next_q_values = self.q_function(next_state)
+            target += self.gamma * np.max(next_q_values)
         self.q_function.update(state, action, target)
 
     def getModel(self):
@@ -169,8 +167,8 @@ class Agent:
     def new_game(self):
         self.actions_performed = {'X':[], 'O':[]}
 
-def reload_memento(agent):
-    training_context = {'elapsed_time_in_seconds': 0, 'num_iterations' : 0, 'running_total_q_values':0}
+def reload_memento(agent, initial_epsilon):
+    training_context = {'elapsed_time_in_seconds': 0, 'num_iterations' : 0, 'epsilon':initial_epsilon, 'training_logs':[]}
     if os.path.exists('./model/tic_tac_toe_agent.pkl'):
         with open('./model/tic_tac_toe_agent.pkl', 'rb') as f:
             model = pickle.load(f)
@@ -186,27 +184,47 @@ def create_memento(agent, training_context):
     with open('./training_context.pkl', 'wb') as f:
         pickle.dump(training_context, f)
 
+def calculate_epsilon(epsilon,number_of_iterations,min,max):
+    if epsilon <= min:
+        return min
+
+    decay =math.pow(min/max,2/number_of_iterations)
+    return epsilon*decay
+
+
 def perform_tic_tac_toe_training():
     # Train the agent
-    training_instance_iterations = 10_000_000
-    agent = Agent(state_shape=(9,), num_actions=9, hidden_units=64, learning_rate=0.01, gamma=0.99, epsilon=0.1)
+    training_instance_iterations = 3_000
+    min_epsilon = 0.1
+    max_epsilon = 0.6
 
-    training_context = reload_memento(agent)
+    agent = Agent(state_shape=(9,), num_actions=9, hidden_units=64, learning_rate=0.01, gamma=0.99, epsilon=max_epsilon)
+
+    training_context = reload_memento(agent, max_epsilon)
+    agent.epsilon = training_context['epsilon']
 
     original_elapsed_time = training_context['elapsed_time_in_seconds']
     st = time.time()
 
-    running_q_value = 0
-    for episode in range(training_context['num_iterations'],training_instance_iterations):
+    def calculate_average_reward(rewards):
+        total_reward = 0
+        for reward in rewards:
+            total_reward += reward
+        return total_reward / len(rewards)
+
+    game_rewards = []
+    for episode in range(training_context['num_iterations'],training_instance_iterations+1):
         board = [' ' for _ in range(9)]
         player = 'X'
         agent.new_game()
         training_context['num_iterations'] += 1
         turns = 0
+        reward_value = 0
+        agent.epsilon = calculate_epsilon(agent.epsilon, training_instance_iterations, min_epsilon, max_epsilon)
         while not is_game_over(board):
             state = (board[:], player)
-            action, q_value  = agent.act(state)
-            running_q_value += q_value
+            training_context['epsilon'] = agent.epsilon
+            action = agent.act(state)
             board[action] = player
             turns +=1
             next_state = (board[:], get_other_player(player))
@@ -215,10 +233,19 @@ def perform_tic_tac_toe_training():
             player = get_other_player(player)
             elapsed_time = time.time() - st
             training_context['elapsed_time_in_seconds'] = original_elapsed_time + elapsed_time
-        if episode > 0 and episode%10 == 0:
-            print("Episode", episode, "Game:", agent.actions_performed, "Training context", training_context, f"Average Q value {running_q_value/10:.2f}", "Turns ",turns)
-            running_q_value = 0
+
+        game_rewards.append(reward_value)
         if episode > 0 and episode %100 ==0:
+            terse_training_context = {'elapsed_time_in_seconds': training_context['elapsed_time_in_seconds'], 'num_iterations' :training_context['num_iterations']}
+            training_log = f"Episode {episode}. Training context {terse_training_context} Epsilon {agent.epsilon:.2f} Average Reward {calculate_average_reward(game_rewards):.2f} Actions performed in last game {agent.actions_performed}. Turns {turns}"
+            logs = training_context['training_logs']
+            logs.append(training_log)
+            print(f"{episode}th Episode logs")
+            print(' '*5, '-' * 20, ' '*5)
+            for item in logs:
+                print(item)
+            print(' '*5, '-' * 20, ' '*5)
+            game_rewards = []
             create_memento(agent, training_context)
 
 def play_simulation():
@@ -230,12 +257,10 @@ def play_simulation():
     # Play the game
     board = [' ' for _ in range(9)]
     player = 'X'
-    turn = 0
-    while not is_game_over(board,turn):
+    while not is_game_over(board):
         state = (board[:], player)
-        action,q_value = agent.act(state,True)
+        action = agent.act(state,True)
         board[action] = player
-        turn += 1
         player = get_other_player(player)
         print_board(board)
 
