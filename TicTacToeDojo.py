@@ -9,10 +9,24 @@ from keras.layers import Input
 
 from tensorflow import keras
 
+VALID_INCONSEQUENTIAL_MOVE_REWARD = 0
+
+INVALID_MOVE_PENALTY = -5
+
+WINNING_REWARD = 2
+
+DISCOUNT_FACTOR = 0.95
+
+LEARNING_RATE = 0.01
+
+SECOND_HIDDEN_LAYER_NODE_NUMBER = 128
+
+FIRST_HIDDEN_LAYER_NODE_NUMBER = 512
+
+NUMBER_OF_EPOCHS = 100_000
+
 CONTEXT_PKL = './training_context.pkl'
-
 TAC_TOE_SECOND_AGENT_PKL = './model/tic_tac_toe_second_agent.pkl'
-
 TAC_TOE_FIRST_AGENT_PKL = './model/tic_tac_toe_first_agent.pkl'
 
 def clear_console():
@@ -95,7 +109,9 @@ class EnvironmentNetworkMapper:
         self.env = env
 
     def perform_prediction(self,model:Sequential):
-        return model.predict([self.env_state_to_network_input()], verbose=0)
+        numpy_input = np.array(self.env_state_to_network_input())
+        # return model.predict(numpy_input.reshape(1,-1), verbose=0)
+        return model.predict(numpy_input.reshape(1,-1))
 
     def teach_model(self, model:Sequential, input, target):
         numpy_input = np.array(input)
@@ -153,7 +169,7 @@ class Agent:
         return self.model
 
     def to_string(self):
-        return f"[ Symbol:{self.agent_symbol} P:{self.games_played} W:{self.games_won} D:{self.games_drawn} L:{self.games_lost} ]"
+        return f"[ Symbol:{self.agent_symbol} P:{self.games_played} W:{100*self.games_won/self.games_played:.2f} D:{100*self.games_drawn/self.games_played:.2f} L:{100*self.games_lost/self.games_played:.2f} ]"
 
 class TrainingContext:
     def __init__(self):
@@ -186,10 +202,10 @@ def create_or_get_agent_brain(file_name,symbol,env:Environment):
     else:
         model = Sequential()
         model.add(Input(shape=env.network_mapper.env_input_length()))
-        model.add(Dense(512, activation='relu'))
-        model.add(Dense(128, activation='relu'))
+        model.add(Dense(FIRST_HIDDEN_LAYER_NODE_NUMBER, activation='relu'))
+        model.add(Dense(SECOND_HIDDEN_LAYER_NODE_NUMBER, activation='relu'))
         model.add(Dense(env.network_mapper.env_output_length()))
-        model.compile(loss='mse', optimizer=keras.optimizers.Adam(learning_rate=0.01))
+        model.compile(loss='mse', optimizer=keras.optimizers.Adam(learning_rate=LEARNING_RATE))
 
     return Agent(model, symbol,0.1)
 
@@ -200,27 +216,25 @@ def create_second_player(env:Environment):
     return create_or_get_agent_brain(TAC_TOE_SECOND_AGENT_PKL, env.second_player_symbol(),env)
 
 def calculate_epsilon(number_of_iterations):
-    if 0 <= number_of_iterations <= 1000:
+    if 0 <= number_of_iterations <= 2000:
         return 0.5
-    elif 1000 < number_of_iterations <= 2000:
-        return 0.3
     elif 2000 < number_of_iterations <= 3000:
+        return 0.3
+    elif 3000 < number_of_iterations <= 4000:
         return 0.2
-    elif 6000 < number_of_iterations < 7000:
+    elif 7000 < number_of_iterations < 8000:
         return 0.3
     return 0.1
 
 def teach_current_agent(current_agent:Agent, next_agent:Agent, current_action,is_action_valid,env:Environment):
-    discount_factor = 0.95
-    reward = 0
+    discount_factor = DISCOUNT_FACTOR
+    reward = VALID_INCONSEQUENTIAL_MOVE_REWARD
     is_done = env.is_game_over()
     if is_done:
         if env.is_winner(current_agent.agent_symbol):
-            reward = 2
-        else:
-            reward = 1
+            reward = WINNING_REWARD
     elif not is_action_valid:
-        reward = -5
+        reward = INVALID_MOVE_PENALTY
 
     network_mapper = env.network_mapper
     target = reward
@@ -233,8 +247,6 @@ def teach_current_agent(current_agent:Agent, next_agent:Agent, current_action,is
     network_mapper.teach_model(current_agent.model, current_agent.current_input, q_value_current)
 
 def perform_tic_tac_toe_training():
-    training_instance_iterations = 100_000
-
     env = Environment()
     training_context = TrainingContext()
 
@@ -259,7 +271,7 @@ def perform_tic_tac_toe_training():
     def get_other_agent(current_agent):
         return first_agent if current_agent == second_agent else second_agent
 
-    for episode in range(training_context.num_iterations,training_instance_iterations+1):
+    for episode in range(training_context.num_iterations,NUMBER_OF_EPOCHS+1):
         current_agent = new_game()
         games_played += 1
         is_not_finished = not env.is_game_over()
@@ -293,7 +305,7 @@ def perform_tic_tac_toe_training():
 
         if episode > 0 and episode%10 ==0:
             clear_console()
-            training_log = f"Episode {episode}. Elapsed time {training_context.elapsed_time_in_seconds:.0f} Epsilon {training_context.epsilon} Avg. Invalid Moves: {invalid_move_count}/{total_move_count} = {100*invalid_move_count/total_move_count:.2f} Avg. Turns = {total_move_count}/ {games_played} = {total_move_count/games_played:.2f} Agent Stats [{first_agent.to_string()} & {second_agent.to_string()}] "
+            training_log = f"Episode {episode}. Elapsed time {training_context.elapsed_time_in_seconds:.0f} Epsilon {training_context.epsilon} Avg. Invalid Moves: {invalid_move_count}/{total_move_count} = {100*invalid_move_count/total_move_count:.2f} Avg. Turns = {total_move_count}/ {games_played} = {total_move_count/games_played:.2f} Agent Stats [{first_agent.to_string()}] "
             logs = training_context.training_logs
             logs.append(training_log)
             print(f"{episode}th Episode logs")
