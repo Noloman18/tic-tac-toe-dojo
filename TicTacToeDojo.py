@@ -1,11 +1,16 @@
 import os
 import pickle
 import time
+import itertools
+import random
 
 import numpy as np
 from keras import Sequential
 from keras.layers import Dense
 from keras.layers import Input
+from keras.models.cloning import clone_model
+
+import tensorflow as tf
 
 from tensorflow import keras
 
@@ -17,15 +22,16 @@ WINNING_REWARD = 2
 
 DISCOUNT_FACTOR = 0.95
 
-LEARNING_RATE = 0.01
+LEARNING_RATE = 0.3
 
-SECOND_HIDDEN_LAYER_NODE_NUMBER = 128
+SECOND_HIDDEN_LAYER_NODE_NUMBER = 64
 
-FIRST_HIDDEN_LAYER_NODE_NUMBER = 512
+FIRST_HIDDEN_LAYER_NODE_NUMBER = 64
 
-NUMBER_OF_EPOCHS = 100_000
+NUMBER_OF_EPOCHS = 1_000_000
 
 CONTEXT_PKL = './training_context.pkl'
+BASE_AGENT = './model/base_agent.pkl'
 TAC_TOE_SECOND_AGENT_PKL = './model/tic_tac_toe_second_agent.pkl'
 TAC_TOE_FIRST_AGENT_PKL = './model/tic_tac_toe_first_agent.pkl'
 
@@ -41,12 +47,30 @@ class Environment:
         self.board[action] = player
         return is_valid
 
+    def get_all_possible_combinations_of_moves(self):
+        board = ['_', '_', '_', '_', '_', '_', '_', '_', '_']
+        possible_boards = []
+
+        # Generate all possible combinations of X and O on the board
+        combinations = itertools.product(['X', 'O',' '], repeat=9)
+        for combo in combinations:
+            for i, val in enumerate(combo):
+                board[i] = val
+            if not self.is_game_over(board):
+                x_count = board.count('X')
+                o_count = board.count('O')
+                if (x_count >0 or o_count < 0) and abs(x_count - o_count) <= 1 :
+                    possible_boards.append(board[:])
+        return possible_boards
+
     def undo_action(self,action):
         self.board[action] = ' '
         return self.board
 
-    def get_possible_actions(self):
-        return [i for i in range(len(self.board)) if self.board[i] == ' ']
+    def get_possible_actions(self,board = None):
+        if board is None:
+            board = self.board
+        return [i for i in range(len(board)) if board[i] ==' ']
 
     def is_valid_move(self, action):
         return action in self.get_possible_actions()
@@ -62,7 +86,9 @@ class Environment:
 
     def second_player_symbol(self):
         return 'O'
-    def is_winner(self,player):
+    def is_winner(self,player, board = None):
+        if board is None:
+            board = self.board
         # Check rows
         for i in range(3):
             row = self.board[i*3:i*3+3]
@@ -96,8 +122,10 @@ class Environment:
         printRow(2)
         printRow(3)
 
-    def is_game_over(self):
-        return ' ' not in self.board or self.is_winner( self.first_player_symbol()) or self.is_winner( self.second_player_symbol())
+    def is_game_over(self, board = None):
+        if board is None:
+            board = self.board
+        return ' ' not in board or self.is_winner( self.first_player_symbol()) or self.is_winner( self.second_player_symbol())
 
     def get_other_player(self, player):
         return self.second_player_symbol() if player == self.first_player_symbol() else self.first_player_symbol()
@@ -116,8 +144,8 @@ class EnvironmentNetworkMapper:
         numpy_input = np.array(input)
         model.fit(numpy_input.reshape(1,-1), target.reshape(1,-1), epochs=1, verbose=0)
 
-    def env_state_to_network_input(self):
-        board = self.env.get_board()
+    def env_state_to_network_input(self, board = None):
+        board = self.env.get_board() if board is None else board
         input = [0] * 3*len(board)
         for i in range(len(board)):
             if board[i] == ' ':
@@ -148,24 +176,41 @@ class Agent:
         self.current_q_values = None
         self.current_input = None
         self.model = model
+        self.was_random_selection = False
+        self.cloned_model = self.backup_brain()
 
     def new_game(self):
         self.actions_performed_in_last_game = []
         self.games_played += 1
+        self.cloned_model = self.backup_brain()
+
+
+    def backup_brain(self):
+        clone = clone_model(self.model)
+        clone.set_weights(self.model.get_weights())
+        return clone
 
     def act(self, env:Environment):
-        self.current_input = env.network_mapper.env_state_to_network_input()
-        self.current_q_values = env.network_mapper.perform_prediction(self.model)[0]
-        chosen_action = np.argmax(self.current_q_values)
         if np.random.random() < self.epsilon:
             actions = env.get_possible_actions()
             chosen_action = actions[np.random.randint(len(actions))]
+            self.was_random_selection = True
+            self.current_input = None
+            self.current_q_values = None
+        else:
+            self.current_input = env.network_mapper.env_state_to_network_input()
+            self.current_q_values = env.network_mapper.perform_prediction(self.get_brain())[0]
+            chosen_action = np.argmax(self.current_q_values)
+            self.was_random_selection = False
 
         self.current_chosen_action = chosen_action
         return chosen_action
 
     def get_brain(self):
         return self.model
+
+    def get_backup_brain(self):
+        return self.cloned_model
 
     def to_string(self):
         return f"[ Symbol:{self.agent_symbol} P:{self.games_played} W:{100*self.games_won/self.games_played:.2f} D:{100*self.games_drawn/self.games_played:.2f} L:{100*self.games_lost/self.games_played:.2f} ]"
@@ -180,10 +225,10 @@ class TrainingContext:
         if os.path.exists('./training_context.pkl'):
             with open('./training_context.pkl', 'rb') as f:
                 training_context = pickle.load(f)
-            self.elapsed_time_in_seconds = training_context['elapsed_time_in_seconds']
-            self.num_iterations = training_context['num_iterations']
-            self.epsilon = training_context['epsilon']
-            self.training_logs = training_context['training_logs']
+            self.elapsed_time_in_seconds = training_context.elapsed_time_in_seconds
+            self.num_iterations = training_context.num_iterations
+            self.epsilon = training_context.epsilon
+            self.training_logs = training_context.training_logs
 
 def create_mementos(first_agent: Agent,second_agent:Agent, training_context):
     with open(TAC_TOE_FIRST_AGENT_PKL, 'wb') as f:
@@ -193,18 +238,20 @@ def create_mementos(first_agent: Agent,second_agent:Agent, training_context):
     with open(CONTEXT_PKL, 'wb') as f:
         pickle.dump(training_context, f)
 
+def create_new_model(env:Environment):
+    model = Sequential()
+    model.add(Input(shape=env.network_mapper.env_input_length()))
+    model.add(Dense(FIRST_HIDDEN_LAYER_NODE_NUMBER, activation='relu'))
+    model.add(Dense(SECOND_HIDDEN_LAYER_NODE_NUMBER, activation='relu'))
+    model.add(Dense(env.network_mapper.env_output_length()))
+    model.compile(loss='mse', optimizer=keras.optimizers.Adam(learning_rate=LEARNING_RATE))
+    return model
 def create_or_get_agent_brain(file_name,symbol,env:Environment):
     if os.path.exists(file_name):
         with open(file_name, 'rb') as f:
             model = pickle.load(f)
-            model
     else:
-        model = Sequential()
-        model.add(Input(shape=env.network_mapper.env_input_length()))
-        model.add(Dense(FIRST_HIDDEN_LAYER_NODE_NUMBER, activation='relu'))
-        model.add(Dense(SECOND_HIDDEN_LAYER_NODE_NUMBER, activation='relu'))
-        model.add(Dense(env.network_mapper.env_output_length()))
-        model.compile(loss='mse', optimizer=keras.optimizers.Adam(learning_rate=LEARNING_RATE))
+        model = create_new_model(env)
 
     return Agent(model, symbol,0.1)
 
@@ -215,17 +262,20 @@ def create_second_player(env:Environment):
     return create_or_get_agent_brain(TAC_TOE_SECOND_AGENT_PKL, env.second_player_symbol(),env)
 
 def calculate_epsilon(number_of_iterations):
-    if 0 <= number_of_iterations <= 2000:
+    if 0 <= number_of_iterations <= 5000:
         return 0.5
-    elif 2000 < number_of_iterations <= 3000:
+    elif 5000 < number_of_iterations <= 10_000:
         return 0.3
-    elif 3000 < number_of_iterations <= 4000:
+    elif 10_000 < number_of_iterations <= 15_000:
         return 0.2
-    elif 7000 < number_of_iterations < 8000:
+    elif 15_000 < number_of_iterations < 20_000:
         return 0.3
     return 0.1
 
 def teach_current_agent(current_agent:Agent, next_agent:Agent, current_action,is_action_valid,env:Environment):
+    if current_agent.was_random_selection:
+        return
+
     discount_factor = DISCOUNT_FACTOR
     reward = VALID_INCONSEQUENTIAL_MOVE_REWARD
     is_done = env.is_game_over()
@@ -238,7 +288,7 @@ def teach_current_agent(current_agent:Agent, next_agent:Agent, current_action,is
     network_mapper = env.network_mapper
     target = reward
     if not is_done:
-        q_next_values = network_mapper.perform_prediction(next_agent.model)[0]
+        q_next_values = network_mapper.perform_prediction(next_agent.get_backup_brain())[0]
         target += discount_factor* np.amax(q_next_values)
 
     q_value_current = current_agent.current_q_values
@@ -303,7 +353,8 @@ def perform_tic_tac_toe_training():
         elapsed_time = time.time() - st
         training_context.elapsed_time_in_seconds = original_elapsed_time + elapsed_time
 
-        if episode > 0 and episode%10 ==0:
+        if episode > 0 and episode%100 ==0:
+            create_mementos(first_agent,second_agent,training_context)
             clear_console()
             training_log = f"Episode {episode}. Elapsed time {training_context.elapsed_time_in_seconds:.0f} Epsilon {training_context.epsilon} Avg. Invalid Moves: {invalid_move_count}/{total_move_count} = {100*invalid_move_count/total_move_count:.2f} Avg. Turns = {total_move_count}/ {games_played} = {total_move_count/games_played:.2f} Agent Stats [{first_agent.to_string()}] "
             logs = training_context.training_logs
@@ -316,8 +367,41 @@ def perform_tic_tac_toe_training():
             invalid_move_count = 0
             total_move_count = 0
             games_played = 0
-        # if episode > 0 and episode %100 ==0:
-        #     create_memento(agent, training_context)
+
+def pre_train_base_model_to_exclude_invalid_moves():
+    env = Environment()
+    network_mapper = env.network_mapper
+    model = create_new_model(env)
+    possible_combinations = env.get_all_possible_combinations_of_moves()
+    random.shuffle(possible_combinations)
+    X = []
+    y = []
+    def calculate_target(action, actions):
+        if action in actions:
+            return VALID_INCONSEQUENTIAL_MOVE_REWARD
+        else:
+            return INVALID_MOVE_PENALTY
+
+    for combination in possible_combinations:
+        actions = env.get_possible_actions(combination)
+        X.append(network_mapper.env_state_to_network_input(combination))
+        y.append([calculate_target(action,actions) for action in range(9)])
+
+    num_train = int(len(X) * 0.8)  # Use 80% of the data for training
+    X_train, y_train = X[:num_train], y[:num_train]
+    X_val, y_val = X[num_train:], y[num_train:]
+
+    # Split the data into training and validation sets
+    train_dataset = tf.data.Dataset.from_tensor_slices((X_train, y_train)).shuffle(len(X_train)).batch(64)
+    val_dataset = tf.data.Dataset.from_tensor_slices((X_val, y_val)).batch(64)
+
+    model.fit(train_dataset, validation_data=val_dataset, epochs=1_00_000, verbose=1)
+
+    with open(BASE_AGENT, 'wb') as f:
+        pickle.dump(model, f)
+
+
 
 if __name__ == "__main__":
-    perform_tic_tac_toe_training()
+    # perform_tic_tac_toe_training()
+    pre_train_base_model_to_exclude_invalid_moves()
