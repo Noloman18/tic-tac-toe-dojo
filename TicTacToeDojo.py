@@ -110,8 +110,7 @@ class EnvironmentNetworkMapper:
 
     def perform_prediction(self,model:Sequential):
         numpy_input = np.array(self.env_state_to_network_input())
-        # return model.predict(numpy_input.reshape(1,-1), verbose=0)
-        return model.predict(numpy_input.reshape(1,-1))
+        return model.predict(numpy_input.reshape(1,-1), verbose=0)
 
     def teach_model(self, model:Sequential, input, target):
         numpy_input = np.array(input)
@@ -247,6 +246,7 @@ def teach_current_agent(current_agent:Agent, next_agent:Agent, current_action,is
     network_mapper.teach_model(current_agent.model, current_agent.current_input, q_value_current)
 
 def perform_tic_tac_toe_training():
+    print('Going to the mountains to train at 50 times the gravity')
     env = Environment()
     training_context = TrainingContext()
 
