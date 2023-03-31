@@ -22,15 +22,18 @@ WINNING_REWARD = 2
 
 DISCOUNT_FACTOR = 0.95
 
-LEARNING_RATE = 0.3
+LEARNING_RATE = 0.01
 
 SECOND_HIDDEN_LAYER_NODE_NUMBER = 64
 
 FIRST_HIDDEN_LAYER_NODE_NUMBER = 64
 
-NUMBER_OF_EPOCHS = 1_000_000
+NUMBER_OF_EPOCHS = 2_000_000
+BASE_AGENT_TRAINING_CHUNKS = 10_000
+BATCH_SIZE = 2048
 
 CONTEXT_PKL = './training_context.pkl'
+BASE_AGENT_TRAINING_CONTEXT_PKL = './base_agent_training_context.pkl'
 BASE_AGENT = './model/base_agent.pkl'
 TAC_TOE_SECOND_AGENT_PKL = './model/tic_tac_toe_second_agent.pkl'
 TAC_TOE_FIRST_AGENT_PKL = './model/tic_tac_toe_first_agent.pkl'
@@ -242,10 +245,17 @@ def create_new_model(env:Environment):
     model = Sequential()
     model.add(Input(shape=env.network_mapper.env_input_length()))
     model.add(Dense(FIRST_HIDDEN_LAYER_NODE_NUMBER, activation='relu'))
-    model.add(Dense(SECOND_HIDDEN_LAYER_NODE_NUMBER, activation='relu'))
+    if SECOND_HIDDEN_LAYER_NODE_NUMBER>0:
+        model.add(Dense(SECOND_HIDDEN_LAYER_NODE_NUMBER, activation='relu'))
     model.add(Dense(env.network_mapper.env_output_length()))
-    model.compile(loss='mse', optimizer=keras.optimizers.Adam(learning_rate=LEARNING_RATE))
+    model.compile(loss='mse',  metrics='accuracy', optimizer=keras.optimizers.Adam(learning_rate=LEARNING_RATE))
     return model
+
+def create_or_get_base_model(env:Environment):
+    if os.path.exists(BASE_AGENT):
+        with open(BASE_AGENT, 'rb') as f:
+            return pickle.load(f)
+    return create_new_model(env)
 def create_or_get_agent_brain(file_name,symbol,env:Environment):
     if os.path.exists(file_name):
         with open(file_name, 'rb') as f:
@@ -368,10 +378,23 @@ def perform_tic_tac_toe_training():
             total_move_count = 0
             games_played = 0
 
+class InvalidMoveTrainingContext:
+    def __init__(self):
+        self.training_chunk = 0
+        self.elapsed_time_in_seconds = 0
+        self.accuracy = []
+
+def load_or_init_invalid_move_model_and_context(env:Environment):
+    training_context = InvalidMoveTrainingContext()
+    if os.path.exists(BASE_AGENT_TRAINING_CONTEXT_PKL):
+        with open(BASE_AGENT_TRAINING_CONTEXT_PKL, 'rb') as f:
+            training_context = pickle.load(f)
+    base_model = create_or_get_base_model(env)
+    return base_model, training_context
 def pre_train_base_model_to_exclude_invalid_moves():
     env = Environment()
     network_mapper = env.network_mapper
-    model = create_new_model(env)
+    model,training_context = load_or_init_invalid_move_model_and_context(env)
     possible_combinations = env.get_all_possible_combinations_of_moves()
     random.shuffle(possible_combinations)
     X = []
@@ -387,20 +410,42 @@ def pre_train_base_model_to_exclude_invalid_moves():
         X.append(network_mapper.env_state_to_network_input(combination))
         y.append([calculate_target(action,actions) for action in range(9)])
 
-    num_train = int(len(X) * 0.8)  # Use 80% of the data for training
-    X_train, y_train = X[:num_train], y[:num_train]
-    X_val, y_val = X[num_train:], y[num_train:]
+    num_train_and_validation = int(len(X) * 0.7)  # Use 70% of the data for training
+    num_test = int(len(X) * 0.9)
+    X_train, y_train = X[:num_train_and_validation], y[:num_train_and_validation]
+    X_val, y_val = X[num_train_and_validation:num_test], y[num_train_and_validation:num_test]
+    X_test, y_test = X[num_test:], y[num_test:]
 
     # Split the data into training and validation sets
-    train_dataset = tf.data.Dataset.from_tensor_slices((X_train, y_train)).shuffle(len(X_train)).batch(64)
-    val_dataset = tf.data.Dataset.from_tensor_slices((X_val, y_val)).batch(64)
+    train_dataset = tf.data.Dataset.from_tensor_slices((X_train, y_train)).shuffle(len(X_train)).batch(BATCH_SIZE)
+    val_dataset = tf.data.Dataset.from_tensor_slices((X_val, y_val)).batch(BATCH_SIZE)
+    test_dataset = tf.data.Dataset.from_tensor_slices((X_test, y_test)).batch(BATCH_SIZE)
 
-    model.fit(train_dataset, validation_data=val_dataset, epochs=1_00_000, verbose=1)
+    original_elapsed_time = training_context.elapsed_time_in_seconds
 
-    with open(BASE_AGENT, 'wb') as f:
-        pickle.dump(model, f)
+    st = time.time()
 
+    total_chunks = int(NUMBER_OF_EPOCHS/BASE_AGENT_TRAINING_CHUNKS)+1
 
+    for i in range(training_context.training_chunk, total_chunks+1):
+        model.fit(train_dataset, validation_data=val_dataset, epochs=BASE_AGENT_TRAINING_CHUNKS, verbose=2)
+        test_loss, test_acc = model.evaluate(test_dataset, verbose=1)
+        print('Test accuracy:', test_acc)
+
+        elapsed_time = time.time() - st
+        training_context.elapsed_time_in_seconds = original_elapsed_time + elapsed_time
+
+        training_context.accuracy.append(test_acc)
+        training_context.training_chunk += 1
+
+        with open(BASE_AGENT_TRAINING_CONTEXT_PKL,'wb') as f:
+            pickle.dump(training_context, f)
+
+        with open(BASE_AGENT, 'wb') as f:
+            pickle.dump(model, f)
+
+        with open('invalid_move_training_accuracy.log', 'a+') as f:
+            f.write(f"{i}th Chunk Accuracy: {test_acc}\n")
 
 if __name__ == "__main__":
     # perform_tic_tac_toe_training()
