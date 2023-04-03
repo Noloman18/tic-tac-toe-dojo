@@ -25,16 +25,15 @@ DISCOUNT_FACTOR = 0.95
 
 LEARNING_RATE = 0.001
 
-SECOND_HIDDEN_LAYER_NODE_NUMBER = 64
+SECOND_HIDDEN_LAYER_NODE_NUMBER = 32
 
-FIRST_HIDDEN_LAYER_NODE_NUMBER = 64
+FIRST_HIDDEN_LAYER_NODE_NUMBER = 32
 
 NUMBER_OF_EPOCHS = 2_000_000
-BASE_AGENT_TRAINING_CHUNKS = 2_000
+INVALID_MOVE_TRAINING_EPOCHS = 100_000
 BATCH_SIZE = 4096
 
 CONTEXT_PKL = './training_progress/training_context.pkl'
-BASE_AGENT_TRAINING_CONTEXT_PKL = './training_progress/base_agent_training_context.pkl'
 BASE_AGENT = './model/base_agent.pkl'
 TAC_TOE_SECOND_AGENT_PKL = './model/tic_tac_toe_second_agent.pkl'
 TAC_TOE_FIRST_AGENT_PKL = './model/tic_tac_toe_first_agent.pkl'
@@ -77,7 +76,8 @@ class Environment:
         return [i for i in range(len(board)) if board[i] ==' ']
 
     def is_valid_move(self, action):
-        return action in self.get_possible_actions()
+        actions = self.get_possible_actions()
+        return action in actions
 
     def reset_board(self):
         self.board = [' '] * 9
@@ -233,10 +233,8 @@ class TrainingContext:
             self.training_logs = training_context.training_logs
 
 def create_mementos(first_agent: Agent,second_agent:Agent, training_context):
-    with open(TAC_TOE_FIRST_AGENT_PKL, 'wb') as f:
-        pickle.dump(first_agent.get_brain(), f)
-    with open(TAC_TOE_SECOND_AGENT_PKL, 'wb') as f:
-        pickle.dump(second_agent.get_brain(), f)
+    first_agent.get_brain().save(TAC_TOE_FIRST_AGENT_PKL)
+    second_agent.get_brain().save(TAC_TOE_SECOND_AGENT_PKL)
     with open(CONTEXT_PKL, 'wb') as f:
         pickle.dump(training_context, f)
 
@@ -258,12 +256,10 @@ def create_or_get_base_model(env:Environment):
     return create_new_model(env)
 def create_or_get_agent_brain(file_name,symbol,env:Environment):
     if os.path.exists(file_name):
-        with open(file_name, 'rb') as f:
-            model = pickle.load(f)
+        model = tf.keras.models.load_model(file_name)
     else:
         if os.path.exists(BASE_AGENT):
-            with open(BASE_AGENT, 'rb') as f:
-                model = pickle.load(f)
+            model = tf.keras.models.load_model(BASE_AGENT)
         else:
             model = create_new_model(env)
 
@@ -286,7 +282,7 @@ def calculate_epsilon(number_of_iterations):
         return 0.3
     return 0.1
 
-def teach_current_agent(current_agent:Agent, next_agent:Agent, current_action,is_action_valid,env:Environment):
+def teach_current_agent(current_agent:Agent, next_agent:Agent, current_action,is_action_valid,env:Environment, debug=False):
     if current_agent.was_random_selection:
         return
 
@@ -305,9 +301,16 @@ def teach_current_agent(current_agent:Agent, next_agent:Agent, current_action,is
         q_next_values = network_mapper.perform_prediction(next_agent.get_backup_brain())[0]
         target += discount_factor* np.amax(q_next_values)
 
-    q_value_current = current_agent.current_q_values
+    q_value_current = current_agent.current_q_values[:]
     q_value_current[current_action] = target
     network_mapper.teach_model(current_agent.model, current_agent.current_input, q_value_current)
+    if debug:
+        board = env.get_board()
+        old_q_values = current_agent.current_q_values
+        new_q_values = network_mapper.perform_prediction(current_agent.get_brain())[0]
+        old_action = current_action
+        new_action = np.argmax(new_q_values)
+        break_point_here = True
 
 def perform_tic_tac_toe_training():
     print('Going to the mountains to train at 50 times the gravity')
@@ -344,7 +347,7 @@ def perform_tic_tac_toe_training():
             action = current_agent.act(env)
             next_agent = get_other_agent(current_agent)
             valid_selection = env.update_with_action(action, current_agent.agent_symbol)
-            teach_current_agent(current_agent, next_agent, action,valid_selection,env)
+            teach_current_agent(current_agent, next_agent, action,valid_selection,env,True)
             if valid_selection:
                 current_agent = next_agent
             else:
@@ -368,7 +371,7 @@ def perform_tic_tac_toe_training():
         training_context.elapsed_time_in_seconds = original_elapsed_time + elapsed_time
 
         if episode > 0 and episode%100 ==0:
-            create_mementos(first_agent,second_agent,training_context)
+            # create_mementos(first_agent,second_agent,training_context) TODO:Uncomment....
             clear_console()
             training_log = f"Episode {episode}. Elapsed time {training_context.elapsed_time_in_seconds:.0f} Epsilon {training_context.epsilon} Avg. Invalid Moves: {invalid_move_count}/{total_move_count} = {100*invalid_move_count/total_move_count:.2f} Avg. Turns = {total_move_count}/ {games_played} = {total_move_count/games_played:.2f} Agent Stats [{first_agent.to_string()}] "
             logs = training_context.training_logs
@@ -382,23 +385,13 @@ def perform_tic_tac_toe_training():
             total_move_count = 0
             games_played = 0
 
-class InvalidMoveTrainingContext:
-    def __init__(self):
-        self.training_chunk = 0
-        self.elapsed_time_in_seconds = 0
-        self.accuracy = []
-
 def load_or_init_invalid_move_model_and_context(env:Environment):
-    training_context = InvalidMoveTrainingContext()
-    if os.path.exists(BASE_AGENT_TRAINING_CONTEXT_PKL):
-        with open(BASE_AGENT_TRAINING_CONTEXT_PKL, 'rb') as f:
-            training_context = pickle.load(f)
     base_model = create_or_get_base_model(env)
-    return base_model, training_context
+    return base_model
 def pre_train_base_model_to_exclude_invalid_moves():
     env = Environment()
     network_mapper = env.network_mapper
-    model,training_context = load_or_init_invalid_move_model_and_context(env)
+    model = load_or_init_invalid_move_model_and_context(env)
     possible_combinations = env.get_all_possible_combinations_of_moves()
     random.shuffle(possible_combinations)
     X = []
@@ -427,33 +420,15 @@ def pre_train_base_model_to_exclude_invalid_moves():
     val_dataset = tf.data.Dataset.from_tensor_slices((X_val, y_val)).batch(BATCH_SIZE)
     test_dataset = tf.data.Dataset.from_tensor_slices((X_test, y_test)).batch(BATCH_SIZE)
 
-    original_elapsed_time = training_context.elapsed_time_in_seconds
-
     st = time.time()
 
-    total_chunks = int(NUMBER_OF_EPOCHS/BASE_AGENT_TRAINING_CHUNKS)+1
+    model.fit(train_dataset, validation_data=val_dataset, epochs=INVALID_MOVE_TRAINING_EPOCHS, verbose=2)
+    test_loss, test_acc = model.evaluate(test_dataset, verbose=1)
+    elapsed_time = time.time() - st
+    print('Test accuracy:', test_acc, 'Test loss:', test_loss, 'Training took', f"{elapsed_time/60:.2f} minutes")
 
-    print('Going to the mountains to train')
-    for i in range(training_context.training_chunk, total_chunks+1):
-        batch_start_time = time.time()
-        model.fit(train_dataset, validation_data=val_dataset, epochs=BASE_AGENT_TRAINING_CHUNKS, verbose=0)
-        test_loss, test_acc = model.evaluate(test_dataset, verbose=1)
-        print('Test accuracy:', test_acc, 'Test loss:', test_loss)
+    model.save(BASE_AGENT)
 
-        batch_runtime = time.time() - batch_start_time
-        elapsed_time = time.time() - st
-        training_context.elapsed_time_in_seconds = original_elapsed_time + elapsed_time
-
-        training_context.accuracy.append(test_acc)
-        training_context.training_chunk += 1
-
-        with open(BASE_AGENT_TRAINING_CONTEXT_PKL,'wb') as f:
-            pickle.dump(training_context, f)
-
-        model.save(BASE_AGENT)
-
-        with open(TRAINING_ACCURACY_LOG, 'a+') as f:
-            f.write(f"{i}th Chunk Accuracy: {test_acc} & Chunk loss {test_loss} Current runtime in minutes [{training_context.elapsed_time_in_seconds/60:.2f}] and Batch runtime in minutes [{batch_runtime/60:.2f}]\n")
 
 if __name__ == "__main__":
     # perform_tic_tac_toe_training()
