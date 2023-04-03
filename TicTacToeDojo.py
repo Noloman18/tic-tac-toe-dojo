@@ -31,7 +31,7 @@ FIRST_HIDDEN_LAYER_NODE_NUMBER = 64
 
 NUMBER_OF_EPOCHS = 2_000_000
 BASE_AGENT_TRAINING_CHUNKS = 2_000
-BATCH_SIZE = 1024
+BATCH_SIZE = 4096
 
 CONTEXT_PKL = './training_progress/training_context.pkl'
 BASE_AGENT_TRAINING_CONTEXT_PKL = './training_progress/base_agent_training_context.pkl'
@@ -438,7 +438,7 @@ def pre_train_base_model_to_exclude_invalid_moves():
         batch_start_time = time.time()
         model.fit(train_dataset, validation_data=val_dataset, epochs=BASE_AGENT_TRAINING_CHUNKS, verbose=0)
         test_loss, test_acc = model.evaluate(test_dataset, verbose=1)
-        print('Test accuracy:', test_acc)
+        print('Test accuracy:', test_acc, 'Test loss:', test_loss)
 
         batch_runtime = time.time() - batch_start_time
         elapsed_time = time.time() - st
