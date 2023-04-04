@@ -17,7 +17,7 @@ TRAINING_ACCURACY_LOG = './training_progress/invalid_move_training_accuracy.log'
 
 VALID_INCONSEQUENTIAL_MOVE_REWARD = 0
 
-INVALID_MOVE_PENALTY = -5
+INVALID_MOVE_PENALTY = -1
 
 WINNING_REWARD = 2
 
@@ -83,7 +83,7 @@ class Environment:
         self.board = [' '] * 9
 
     def get_board(self):
-        return self.board[:]
+        return list(self.board)
 
     def first_player_symbol(self):
         return 'X'
@@ -121,10 +121,8 @@ class Environment:
     def print_board(self):
         def printRow(row):
             offset = (row-1)*3
-            print(f"{self.board[0+offset]}|{self.board[1+offset]}|{self.board[2+offset]}")
-        printRow(1)
-        printRow(2)
-        printRow(3)
+            return(f"{self.board[0+offset]}|{self.board[1+offset]}|{self.board[2+offset]}")
+        return f"{printRow(1)}\n{printRow(2)}\n{printRow(3)}"
 
     def is_game_over(self, board = None):
         if board is None:
@@ -200,6 +198,7 @@ class Agent:
             self.current_input = None
             self.current_q_values = None
         else:
+            self.current_board = env.print_board()
             self.current_input = env.network_mapper.env_state_to_network_input()
             self.current_q_values = env.network_mapper.perform_prediction(self.get_brain())[0]
             chosen_action = np.argmax(self.current_q_values)
@@ -298,20 +297,35 @@ def teach_current_agent(current_agent:Agent, next_agent:Agent, current_action,is
 
     network_mapper = env.network_mapper
     target = reward
+    next_agent_next_action = None
     if not is_done:
         if is_action_valid:
-            q_next_values = network_mapper.perform_prediction(next_agent.get_backup_brain())[0]
+            q_next_values = network_mapper.perform_prediction(next_agent.get_brain())[0]
+            next_agent_next_action = np.argmax(q_next_values)
             target += discount_factor* -1*np.amax(q_next_values)
 
     q_value_current = current_agent.current_q_values.copy()
+    previous_q_value_at_current_action = q_value_current[current_action]
     q_value_current[current_action] = target
+    # actions = env.get_possible_actions()
+    # for i in range(len(q_value_current)):
+    #     if i!= current_action:
+    #         if i not in actions:
+    #             q_value_current[i] = INVALID_MOVE_PENALTY
+
     network_mapper.teach_model(current_agent.model, current_agent.current_input, q_value_current)
     if debug:
-        board = env.get_board()
-        old_q_values = current_agent.current_q_values
+        debug_object = {}
+        debug_object['current_board'] = env.print_board()
+        debug_object['previous_board'] = current_agent.current_board
+        debug_object['old_q_values'] = current_agent.current_q_values
         new_q_values = network_mapper.perform_prediction(current_agent.get_brain(), current_agent.current_input)[0]
-        old_action = current_action
-        new_action = np.argmax(new_q_values)
+        debug_object['old_action'] = current_action
+        debug_object['new_action'] = np.argmax(new_q_values)
+        debug_object['new_q_values'] = new_q_values
+        debug_object['new_q_value'] = target
+        debug_object['current_player'] = current_agent.agent_symbol
+        debug_object['previous_q_value'] = previous_q_value_at_current_action
         break_point_here = True
 
 def perform_tic_tac_toe_training():
@@ -349,7 +363,7 @@ def perform_tic_tac_toe_training():
             action = current_agent.act(env)
             next_agent = get_other_agent(current_agent)
             valid_selection = env.update_with_action(action, current_agent.agent_symbol)
-            teach_current_agent(current_agent, next_agent, action,valid_selection,env,True)
+            teach_current_agent(current_agent, next_agent, action,valid_selection,env)
             if valid_selection:
                 current_agent = next_agent
             else:
@@ -372,9 +386,8 @@ def perform_tic_tac_toe_training():
         elapsed_time = time.time() - st
         training_context.elapsed_time_in_seconds = original_elapsed_time + elapsed_time
 
-        if episode > 0 and episode%10 ==0:
-            # create_mementos(first_agent,second_agent,training_context) TODO:Uncomment....
-            clear_console()
+        if episode > 0 and episode%100 ==0:
+            create_mementos(first_agent,second_agent,training_context)
             training_log = f"Episode {episode}. Elapsed time {training_context.elapsed_time_in_seconds:.0f} Epsilon {training_context.epsilon} Avg. Invalid Moves: {invalid_move_count}/{total_move_count} = {100*invalid_move_count/total_move_count:.2f} Avg. Turns = {total_move_count}/ {games_played} = {total_move_count/games_played:.2f} Agent Stats [{first_agent.to_string()}] "
             logs = training_context.training_logs
             logs.append(training_log)
