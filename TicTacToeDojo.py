@@ -30,7 +30,7 @@ SECOND_HIDDEN_LAYER_NODE_NUMBER = 32
 FIRST_HIDDEN_LAYER_NODE_NUMBER = 32
 
 NUMBER_OF_EPOCHS = 2_000_000
-INVALID_MOVE_TRAINING_EPOCHS = 100_000
+INVALID_MOVE_TRAINING_EPOCHS = 10_000
 BATCH_SIZE = 4096
 
 CONTEXT_PKL = './training_progress/training_context.pkl'
@@ -140,8 +140,8 @@ class EnvironmentNetworkMapper:
     def __init__(self, env:Environment):
         self.env = env
 
-    def perform_prediction(self,model:Sequential):
-        numpy_input = np.array(self.env_state_to_network_input())
+    def perform_prediction(self,model:Sequential, input = None):
+        numpy_input = np.array(self.env_state_to_network_input() if input is None else input)
         return model.predict(numpy_input.reshape(1,-1), verbose=0)
 
     def teach_model(self, model:Sequential, input, target):
@@ -251,7 +251,6 @@ def create_new_model(env:Environment):
 
 def create_or_get_base_model(env:Environment):
     if os.path.exists(BASE_AGENT):
-        print('Loading model....')
         return tf.keras.models.load_model(BASE_AGENT)
     return create_new_model(env)
 def create_or_get_agent_brain(file_name,symbol,env:Environment):
@@ -263,6 +262,8 @@ def create_or_get_agent_brain(file_name,symbol,env:Environment):
         else:
             model = create_new_model(env)
 
+    optimizer = Adam(learning_rate=LEARNING_RATE)
+    model.compile(loss='mse',  metrics='accuracy', optimizer=optimizer)
     return Agent(model, symbol,0.1)
 
 def create_first_player(env:Environment):
@@ -298,16 +299,17 @@ def teach_current_agent(current_agent:Agent, next_agent:Agent, current_action,is
     network_mapper = env.network_mapper
     target = reward
     if not is_done:
-        q_next_values = network_mapper.perform_prediction(next_agent.get_backup_brain())[0]
-        target += discount_factor* np.amax(q_next_values)
+        if is_action_valid:
+            q_next_values = network_mapper.perform_prediction(next_agent.get_backup_brain())[0]
+            target += discount_factor* -1*np.amax(q_next_values)
 
-    q_value_current = current_agent.current_q_values[:]
+    q_value_current = current_agent.current_q_values.copy()
     q_value_current[current_action] = target
     network_mapper.teach_model(current_agent.model, current_agent.current_input, q_value_current)
     if debug:
         board = env.get_board()
         old_q_values = current_agent.current_q_values
-        new_q_values = network_mapper.perform_prediction(current_agent.get_brain())[0]
+        new_q_values = network_mapper.perform_prediction(current_agent.get_brain(), current_agent.current_input)[0]
         old_action = current_action
         new_action = np.argmax(new_q_values)
         break_point_here = True
@@ -370,7 +372,7 @@ def perform_tic_tac_toe_training():
         elapsed_time = time.time() - st
         training_context.elapsed_time_in_seconds = original_elapsed_time + elapsed_time
 
-        if episode > 0 and episode%100 ==0:
+        if episode > 0 and episode%10 ==0:
             # create_mementos(first_agent,second_agent,training_context) TODO:Uncomment....
             clear_console()
             training_log = f"Episode {episode}. Elapsed time {training_context.elapsed_time_in_seconds:.0f} Epsilon {training_context.epsilon} Avg. Invalid Moves: {invalid_move_count}/{total_move_count} = {100*invalid_move_count/total_move_count:.2f} Avg. Turns = {total_move_count}/ {games_played} = {total_move_count/games_played:.2f} Agent Stats [{first_agent.to_string()}] "
@@ -431,5 +433,5 @@ def pre_train_base_model_to_exclude_invalid_moves():
 
 
 if __name__ == "__main__":
-    # perform_tic_tac_toe_training()
-    pre_train_base_model_to_exclude_invalid_moves()
+    perform_tic_tac_toe_training()
+    # pre_train_base_model_to_exclude_invalid_moves()
