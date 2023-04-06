@@ -17,7 +17,7 @@ TRAINING_ACCURACY_LOG = './training_progress/invalid_move_training_accuracy.log'
 
 VALID_INCONSEQUENTIAL_MOVE_REWARD = 0
 
-INVALID_MOVE_PENALTY = -1
+INVALID_MOVE_PENALTY = -5
 
 WINNING_REWARD = 2
 
@@ -172,6 +172,7 @@ class Agent:
         self.epsilon = epsilon
         self.agent_symbol = agent_symbol
         self.actions_performed_in_last_game = []
+        self.debug_objects = []
         self.current_chosen_action = None
         self.current_q_values = None
         self.current_input = None
@@ -181,13 +182,17 @@ class Agent:
 
     def new_game(self):
         self.actions_performed_in_last_game = []
+        self.debug_objects = []
         self.games_played += 1
         self.cloned_model = self.backup_brain()
 
+    def add_debug_object(self,obj):
+        self.debug_objects.append(obj)
 
     def backup_brain(self):
         clone = clone_model(self.model)
         clone.set_weights(self.model.get_weights())
+        clone.compile(loss='mse', optimizer=Adam(lr=LEARNING_RATE))
         return clone
 
     def act(self, env:Environment):
@@ -198,7 +203,8 @@ class Agent:
             self.current_input = None
             self.current_q_values = None
         else:
-            self.current_board = env.print_board()
+            self.current_board = env.get_board()
+            self.possible_actions = env.get_possible_actions()
             self.current_input = env.network_mapper.env_state_to_network_input()
             self.current_q_values = env.network_mapper.perform_prediction(self.get_brain())[0]
             chosen_action = np.argmax(self.current_q_values)
@@ -223,8 +229,8 @@ class TrainingContext:
         self.epsilon = 0.1
         self.training_logs = []
 
-        if os.path.exists('./training_context.pkl'):
-            with open('./training_context.pkl', 'rb') as f:
+        if os.path.exists('./training_progress/training_context.pkl'):
+            with open('./training_progress/training_context.pkl', 'rb') as f:
                 training_context = pickle.load(f)
             self.elapsed_time_in_seconds = training_context.elapsed_time_in_seconds
             self.num_iterations = training_context.num_iterations
@@ -272,13 +278,15 @@ def create_second_player(env:Environment):
     return create_or_get_agent_brain(TAC_TOE_SECOND_AGENT_PKL, env.second_player_symbol(),env)
 
 def calculate_epsilon(number_of_iterations):
-    if 0 <= number_of_iterations <= 5000:
+    if 0 <= number_of_iterations <= 40000:
+        return 0.7
+    elif 40000 < number_of_iterations <= 45000:
         return 0.5
-    elif 5000 < number_of_iterations <= 10_000:
+    elif 45000 < number_of_iterations <= 50_000:
         return 0.3
-    elif 10_000 < number_of_iterations <= 15_000:
+    elif 50_000 < number_of_iterations <= 55_000:
         return 0.2
-    elif 15_000 < number_of_iterations < 20_000:
+    elif 55_000 < number_of_iterations < 60_000:
         return 0.3
     return 0.1
 
@@ -292,8 +300,6 @@ def teach_current_agent(current_agent:Agent, next_agent:Agent, current_action,is
     if is_done:
         if env.is_winner(current_agent.agent_symbol):
             reward = WINNING_REWARD
-    elif not is_action_valid:
-        reward = INVALID_MOVE_PENALTY
 
     network_mapper = env.network_mapper
     target = reward
@@ -307,16 +313,16 @@ def teach_current_agent(current_agent:Agent, next_agent:Agent, current_action,is
     q_value_current = current_agent.current_q_values.copy()
     previous_q_value_at_current_action = q_value_current[current_action]
     q_value_current[current_action] = target
-    # actions = env.get_possible_actions()
-    # for i in range(len(q_value_current)):
-    #     if i!= current_action:
-    #         if i not in actions:
-    #             q_value_current[i] = INVALID_MOVE_PENALTY
+    actions = env.get_possible_actions()
+    for i in range(len(q_value_current)):
+        if i not in actions:
+            q_value_current[i] = INVALID_MOVE_PENALTY
+
 
     network_mapper.teach_model(current_agent.model, current_agent.current_input, q_value_current)
     if debug:
         debug_object = {}
-        debug_object['current_board'] = env.print_board()
+        debug_object['current_board'] = env.get_board()
         debug_object['previous_board'] = current_agent.current_board
         debug_object['old_q_values'] = current_agent.current_q_values
         new_q_values = network_mapper.perform_prediction(current_agent.get_brain(), current_agent.current_input)[0]
@@ -326,6 +332,11 @@ def teach_current_agent(current_agent:Agent, next_agent:Agent, current_action,is
         debug_object['new_q_value'] = target
         debug_object['current_player'] = current_agent.agent_symbol
         debug_object['previous_q_value'] = previous_q_value_at_current_action
+        debug_object['next_agent_action'] = next_agent_next_action
+        previous_actions = current_agent.possible_actions
+        debug_object['is_new_action_valid'] = debug_object['new_action'] in previous_actions
+        current_agent.add_debug_object(debug_object)
+        objects = next_agent.debug_objects
         break_point_here = True
 
 def perform_tic_tac_toe_training():
@@ -359,16 +370,18 @@ def perform_tic_tac_toe_training():
         games_played += 1
         is_not_finished = not env.is_game_over()
         while is_not_finished:
-            total_move_count+=1
             action = current_agent.act(env)
+            if not current_agent.was_random_selection:
+                total_move_count+=1
             next_agent = get_other_agent(current_agent)
             valid_selection = env.update_with_action(action, current_agent.agent_symbol)
-            teach_current_agent(current_agent, next_agent, action,valid_selection,env)
+            teach_current_agent(current_agent, next_agent, action,valid_selection,env, False)
             if valid_selection:
                 current_agent = next_agent
             else:
                 env.undo_action(action)
-                invalid_move_count += 1
+                if not current_agent.was_random_selection:
+                    invalid_move_count += 1
 
             is_not_finished = not env.is_game_over()
             if not is_not_finished:
@@ -388,7 +401,7 @@ def perform_tic_tac_toe_training():
 
         if episode > 0 and episode%100 ==0:
             create_mementos(first_agent,second_agent,training_context)
-            training_log = f"Episode {episode}. Elapsed time {training_context.elapsed_time_in_seconds:.0f} Epsilon {training_context.epsilon} Avg. Invalid Moves: {invalid_move_count}/{total_move_count} = {100*invalid_move_count/total_move_count:.2f} Avg. Turns = {total_move_count}/ {games_played} = {total_move_count/games_played:.2f} Agent Stats [{first_agent.to_string()}] "
+            training_log = f"Episode {episode}. Elapsed time {training_context.elapsed_time_in_seconds/60:.2f} Epsilon {training_context.epsilon} Avg. Invalid Moves: {invalid_move_count}/{total_move_count} = {100*invalid_move_count/total_move_count:.2f} Avg. Turns = {total_move_count}/ {games_played} = {total_move_count/games_played:.2f} Agent Stats [{first_agent.to_string()}] "
             logs = training_context.training_logs
             logs.append(training_log)
             print(f"{episode}th Episode logs")
